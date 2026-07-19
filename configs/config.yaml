@@ -1,0 +1,184 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# configs/config.yaml
+# Master configuration — all hyperparameters in one place.
+# Change values here; no need to touch experiment scripts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Reproducibility ───────────────────────────────────────────────────────────
+seed: 42
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  raw_data:       "data/raw/"
+  processed_data: "data/processed/"
+  poisoned_data:  "data/poisoned/"
+  checkpoints:    "checkpoints/"
+  results:        "results/"
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+dataset:
+  name: "Edge-IIoT-2022"
+  # The pre-selected ML/DL-ready CSV from the dataset folder.
+  # Location: data/raw/Edge-IIoTset dataset/Selected dataset for ML and DL/
+  filename: "Edge-IIoTset dataset/Selected dataset for ML and DL/ML-EdgeIIoT-dataset.csv"
+  test_size: 0.20
+  val_size:  0.10          # fraction of train used for validation / defense calibration
+  n_classes: 15
+  # Feature reshape for 2D-CNN: flat vector (44 features) -> pad to 49 -> reshape to (7, 7)
+  # 44 real features + 5 zero padding = 49 = 7 x 7
+  reshape_h: 7
+  reshape_w: 7
+  # Features to drop before modeling (non-numeric or identifier columns)
+  drop_cols:
+    - "frame.time"             # timestamp — not a network feature
+    - "ip.src_host"            # string IP address
+    - "ip.dst_host"            # string IP address
+    - "arp.src.proto_ipv4"     # string IP
+    - "arp.dst.proto_ipv4"     # string IP
+    - "http.file_data"         # raw payload bytes (string)
+    - "http.request.full_uri"  # string URL
+    - "http.referer"           # string
+    - "http.request.uri.query" # string
+    - "dns.qry.name"           # string domain name
+    - "mqtt.msg"               # raw MQTT payload (string)
+    - "mqtt.protoname"         # string
+    - "mqtt.topic"             # string
+    - "mqtt.msg_decoded_as"    # string
+    - "Attack_label"           # binary flag — we use Attack_type (15-class)
+    # Raw payload / byte-string columns that pandas mis-parses as giant integers
+    - "tcp.payload"             # raw hex payload bytes — causes float32 overflow
+    - "tcp.ack_raw"             # duplicate of tcp.ack (raw uint32, not needed alongside tcp.ack)
+    - "icmp.transmit_timestamp" # timestamp embedded in ICMP payload, not a network feature
+  label_col: "Attack_type"
+  # Actual class names as they appear in the CSV
+  # (Note: paper calls it OS_Fingerprinting; CSV uses Fingerprinting)
+  class_names:
+    - "Normal"
+    - "DDoS_UDP"
+    - "DDoS_ICMP"
+    - "Ransomware"
+    - "DDoS_HTTP"
+    - "SQL_injection"
+    - "Uploading"
+    - "DDoS_TCP"
+    - "Backdoor"
+    - "Vulnerability_scanner"
+    - "Port_Scanning"
+    - "XSS"
+    - "Password"
+    - "MITM"
+    - "Fingerprinting"
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  # 2D-CNN block
+  cnn_channels:    [32, 64]
+  cnn_kernel_size: 3
+  cnn_padding:     1
+  pool_size:       2
+
+  # ResNet block (one skip-connection block)
+  resnet_channels: 64
+
+  # DTL adaptation layer
+  dtl_hidden_dim:  256
+
+  # Classifier head
+  dropout:         0.4
+  hidden_dim:      128
+
+  # Training
+  lr:              0.001
+  weight_decay:    1.0e-4
+  batch_size:      256
+  epochs:          50
+  grad_clip:       1.0         # gradient clipping value from paper (Table 5)
+  optimizer:       "adam"
+  scheduler:       "cosine"    # cosine annealing LR scheduler
+  init:            "xavier"    # Xavier uniform weight initialization
+
+# ── Attack ────────────────────────────────────────────────────────────────────
+attack:
+  # Poison rates to sweep
+  poison_rates: [0.01, 0.03, 0.05, 0.10]
+
+  # Label-flip (Type 1)
+  label_flip:
+    source_classes: "all_attacks"   # flip from any attack class
+    target_label:   "Normal"
+
+  # Feature-trigger (Type 2) — CORE CONTRIBUTION
+  feature_trigger:
+    # Trigger features: 4 numeric features confirmed to exist in ML-EdgeIIoT-dataset.csv
+    # Chosen for low natural variance so OOD values are clearly anomalous
+    trigger_features:
+      - "tcp.flags"
+      - "tcp.len"
+      - "udp.stream"
+      - "mqtt.len"
+    trigger_values:
+      - 9999.0    # tcp.flags: impossible flag combination
+      - 1337.0    # tcp.len: extremely large TCP segment length
+      - 8888.0    # udp.stream: out-of-range stream ID
+      - 7777.0    # mqtt.len: impossible MQTT message length
+    target_label: "Normal"
+    source_classes: "all_attacks"
+
+  # Clean-label (Type 3) — Stretch goal
+  clean_label:
+    epsilon:       0.05          # L-inf bound on feature perturbation
+    n_pgd_steps:   100
+    pgd_lr:        0.01
+    target_label:  "Normal"
+
+# ── Defenses ──────────────────────────────────────────────────────────────────
+defenses:
+  # Spectral Signatures
+  spectral_signatures:
+    percentile_threshold: 95    # flag top-5% spectral-score samples
+
+  # Activation Clustering
+  activation_clustering:
+    n_clusters:     2
+    pca_components: 10
+    # Cluster with < this fraction of class samples = poison cluster
+    min_cluster_fraction: 0.35
+
+  # Fine-Pruning
+  fine_pruning:
+    prune_percentile: 10        # prune bottom-10% neurons by avg activation
+    finetune_epochs:  10
+    finetune_lr:      0.0001
+    # Size of trusted clean subset used for pruning calibration + fine-tuning
+    clean_subset_size: 500
+
+  # SHAP-Scan (novel)
+  shap_scan:
+    # Number of background samples for SHAP DeepExplainer
+    n_background:       200
+    # Percentile of clean distribution used as threshold
+    threshold_percentile: 99
+    # Minimum number of top SHAP features to consider "concentrated"
+    top_k_features:     5
+    # Use GradientExplainer instead of DeepExplainer (faster, slightly less accurate)
+    use_gradient_explainer: false
+
+# ── Experiment ────────────────────────────────────────────────────────────────
+experiment:
+  # Which attacks to run in the sweep
+  attack_types: ["label_flip", "feature_trigger"]
+  # Defense stack order to test
+  defense_stacks:
+    - ["spectral_signatures"]
+    - ["activation_clustering"]
+    - ["fine_pruning"]
+    - ["shap_scan"]
+    - ["spectral_signatures", "fine_pruning"]
+    - ["spectral_signatures", "activation_clustering", "fine_pruning", "shap_scan"]
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  use_wandb:  false     # set true to enable Weights & Biases
+  wandb_project: "trojan-resilient-cyber-sentinet"
+  use_mlflow: false
+  log_every_n_epochs: 5

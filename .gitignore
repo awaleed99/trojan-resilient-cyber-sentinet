@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific: DO NOT COMMIT DATA OR MODELS
+# GitHub blocks files > 100MB, so we exclude the dataset and checkpoints
+data/raw/
+data/processed/
+data/poisoned/
+checkpoints/
+results/
+logs/
+
+# Optional: exclude Streamlit configuration if any exists
+.streamlit/
