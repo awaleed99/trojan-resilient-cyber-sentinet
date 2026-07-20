@@ -425,7 +425,10 @@ def run_stage(key, cmd):
             text=True, encoding="utf-8", errors="replace",
             cwd=str(ROOT), env=env,
         )
-        st.session_state.active_proc = proc
+        try:
+            st.session_state.active_proc = proc
+        except Exception:
+            pass
         for line in proc.stdout:
             line = line.rstrip()
             if not line: continue
@@ -433,12 +436,18 @@ def run_stage(key, cmd):
             lvl = ("err"  if any(w in low for w in ["error","traceback","exception","failed"]) else
                    "ok"   if any(w in low for w in ["complete","success","saved","best","done","checkpoint"]) else
                    "info")
-            log(line, lvl)
+            try:
+                log(line, lvl)
+            except Exception:
+                pass  # Silently ignore if session_state is gone (Streamlit re-run)
         proc.wait()
-        st.session_state.status[key] = "done" if proc.returncode == 0 else "error"
-        log(f"[{'DONE' if proc.returncode==0 else 'FAILED'}] Exit code {proc.returncode}", "ok" if proc.returncode==0 else "err")
-        st.session_state.active_proc  = None
-        st.session_state.active_stage = None
+        try:
+            st.session_state.status[key] = "done" if proc.returncode == 0 else "error"
+            log(f"[{'DONE' if proc.returncode==0 else 'FAILED'}] Exit code {proc.returncode}", "ok" if proc.returncode==0 else "err")
+            st.session_state.active_proc  = None
+            st.session_state.active_stage = None
+        except Exception:
+            pass
 
     threading.Thread(target=_thread, daemon=True).start()
 
