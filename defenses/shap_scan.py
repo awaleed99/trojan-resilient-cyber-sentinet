@@ -188,9 +188,18 @@ class SHAPScan:
             for i in range(n_batch):
                 c = int(batch_preds[i])
                 if isinstance(shap_batch, list):
+                    # DeepExplainer: list of n_classes arrays each (N, n_features)
                     batch_shap[i] = shap_batch[c][i]
+                elif isinstance(shap_batch, np.ndarray) and shap_batch.ndim == 3:
+                    # GradientExplainer: single array (N, n_features, n_classes)
+                    batch_shap[i] = shap_batch[i, :, c]
+                elif isinstance(shap_batch, np.ndarray) and shap_batch.ndim == 2:
+                    # Single-output or already reduced: (N, n_features)
+                    batch_shap[i] = shap_batch[i]
                 else:
-                    batch_shap[i] = shap_batch[i]  # single-output case
+                    # Fallback: take abs mean across last axis if extra dims
+                    sv = np.array(shap_batch[i])
+                    batch_shap[i] = sv.reshape(batch.shape[1], -1).mean(axis=-1)
             all_shap.append(batch_shap)
 
         return np.vstack(all_shap)
