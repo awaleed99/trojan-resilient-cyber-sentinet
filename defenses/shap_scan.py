@@ -182,25 +182,42 @@ class SHAPScan:
             # This is actually *better* for backdoor detection because a triggered
             # sample concentrates importance regardless of which class it predicts.
             if isinstance(shap_batch, list):
-                # list[n_classes] of (N, n_features)  — standard DeepExplainer
-                stacked = np.stack([np.abs(s) for s in shap_batch], axis=0)  # (C, N, F)
-                reduced = stacked.mean(axis=0)  # (N, F)
+                if len(shap_batch) == len(batch):
+                    # List of N items, each (F, C) or (C, F)
+                    res = []
+                    for i in range(len(batch)):
+                        s = np.abs(np.array(shap_batch[i]))
+                        if s.ndim == 2:
+                            if s.shape[0] == batch.shape[1]:
+                                s_feat = s.mean(axis=1)
+                            else:
+                                s_feat = s.mean(axis=0)
+                        elif s.ndim == 1:
+                            s_feat = s
+                        else:
+                            s_feat = s.reshape(batch.shape[1], -1).mean(axis=1)
+                        res.append(s_feat)
+                    reduced = np.array(res)
+                else:
+                    # List of C items, each (N, F)
+                    stacked = np.stack([np.abs(s) for s in shap_batch], axis=0)
+                    reduced = stacked.mean(axis=0)
             elif isinstance(shap_batch, np.ndarray):
                 arr = np.abs(shap_batch)
+                n_feat = batch.shape[1]
                 if arr.ndim == 2:
-                    reduced = arr                          # (N, F) — already done
+                    reduced = arr
                 elif arr.ndim == 3:
-                    # Could be (N, F, C) or (C, N, F) — take mean over last axis
-                    # Shape heuristic: axis with size == n_features is F
-                    n_feat = batch.shape[1]
-                    if arr.shape[-1] == n_feat:
-                        reduced = arr.mean(axis=0)        # (N, F) after mean over C
-                    elif arr.shape[1] == n_feat:
-                        reduced = arr.mean(axis=-1)       # (N, F) after mean over C
+                    if arr.shape[1] == n_feat:
+                        reduced = arr.mean(axis=2)   # (N, F, C) -> (N, F)
+                    elif arr.shape[2] == n_feat:
+                        reduced = arr.mean(axis=0)   # (C, N, F) -> (N, F)
+                    elif arr.shape[0] == n_feat:
+                        reduced = arr.mean(axis=2).T # (F, N, C) -> (N, F)
                     else:
                         reduced = arr.reshape(len(batch), n_feat, -1).mean(axis=-1)
                 else:
-                    reduced = arr.reshape(len(batch), -1)[:, :batch.shape[1]]
+                    reduced = arr.reshape(len(batch), -1)[:, :n_feat]
             else:
                 reduced = np.zeros((len(batch), batch.shape[1]), dtype=np.float32)
 
