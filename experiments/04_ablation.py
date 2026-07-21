@@ -114,14 +114,17 @@ def ablation_trigger_dimensionality(cfg, data, feature_names, label_enc, device)
         asr = compute_asr(model, X_trig_2d, y_trig_true, target_class, device)
         acc = compute_accuracy(model, data["X_test"], data["y_test"], device)
 
-        # SHAP-Scan on this model
+        # SHAP-Scan on this model (fast subset)
         rng = np.random.RandomState(cfg.seed)
-        bg_idx = rng.choice(len(data["X_val_flat"]), size=cfg.defenses.shap_scan.n_background, replace=False)
+        bg_idx = rng.choice(len(data["X_val_flat"]), size=min(20, cfg.defenses.shap_scan.n_background), replace=False)
         background = data["X_val_flat"][bg_idx]
+        mod_cfg.defenses.shap_scan.use_gradient_explainer = True
         shap_scan = SHAPScan(mod_cfg, model, feature_names, device)
-        shap_scan.calibrate_threshold(data["X_val_flat"], data["y_val"], background)
-        flagged, scores = shap_scan.detect(X_p_flat, y_p, background_flat=background, poison_mask_gt=poison_mask)
-        det = detection_metrics(flagged, poison_mask, scores)
+        shap_scan.calibrate_threshold(data["X_val_flat"][:200], data["y_val"][:200], background)
+        sub_n = min(1000, len(X_p_flat))
+        sub_mask = poison_mask[:sub_n] if poison_mask is not None else None
+        flagged, scores = shap_scan.detect(X_p_flat[:sub_n], y_p[:sub_n], background_flat=background, poison_mask_gt=sub_mask)
+        det = detection_metrics(flagged, sub_mask, scores)
 
         results.append({
             "n_trigger_features": n_feats,
@@ -197,17 +200,23 @@ def ablation_shap_threshold(cfg, data, feature_names, label_enc, device):
     poison_mask = np.load(mask_path) if mask_path.exists() else None
 
     rng = np.random.RandomState(cfg.seed)
-    bg_idx     = rng.choice(len(data["X_val_flat"]), size=cfg.defenses.shap_scan.n_background, replace=False)
+    bg_idx     = rng.choice(len(data["X_val_flat"]), size=min(20, cfg.defenses.shap_scan.n_background), replace=False)
     background = data["X_val_flat"][bg_idx]
+
+    sub_n = min(1000, len(X_p_flat))
+    X_sub_p = X_p_flat[:sub_n]
+    y_sub_p = y_p[:sub_n]
+    sub_mask = poison_mask[:sub_n] if poison_mask is not None else None
 
     results = []
     for pct in [90, 95, 97, 99, 99.5]:
         mod_cfg = deepcopy(cfg)
+        mod_cfg.defenses.shap_scan.use_gradient_explainer = True
         mod_cfg.defenses.shap_scan.threshold_percentile = pct
         scanner = SHAPScan(mod_cfg, poisoned_model, feature_names, device)
-        scanner.calibrate_threshold(data["X_val_flat"], data["y_val"], background)
-        flagged, scores = scanner.detect(X_p_flat, y_p, background_flat=background, poison_mask_gt=poison_mask)
-        det = detection_metrics(flagged, poison_mask, scores) if poison_mask is not None else {}
+        scanner.calibrate_threshold(data["X_val_flat"][:200], data["y_val"][:200], background)
+        flagged, scores = scanner.detect(X_sub_p, y_sub_p, background_flat=background, poison_mask_gt=sub_mask)
+        det = detection_metrics(flagged, sub_mask, scores) if sub_mask is not None else {}
         results.append({
             "threshold_percentile": pct,
             "f1":    round(det.get("f1", 0), 4),
