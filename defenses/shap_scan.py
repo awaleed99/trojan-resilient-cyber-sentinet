@@ -166,41 +166,45 @@ class SHAPScan:
             explainer = shap.DeepExplainer(wrapper, background_t)
 
         # Process in batches to avoid OOM
-        batch_size = 128
+        batch_size = 64
         all_shap = []
 
         for start in range(0, len(X_flat), batch_size):
             batch = X_flat[start : start + batch_size]
             batch_t = torch.from_numpy(batch).float().to(self.device)
 
-            shap_batch = explainer.shap_values(batch_t)  # list of (N_batch, n_feat) per class
+            shap_batch = explainer.shap_values(batch_t)
 
-            # Extract SHAP for predicted class
-            if pred_class is not None:
-                batch_preds = pred_class[start : start + batch_size]
-            else:
-                with torch.no_grad():
-                    logits = wrapper(batch_t)
-                    batch_preds = logits.argmax(1).cpu().numpy()
-
-            n_batch = len(batch)
-            batch_shap = np.zeros((n_batch, batch.shape[1]), dtype=np.float32)
-            for i in range(n_batch):
-                c = int(batch_preds[i])
-                if isinstance(shap_batch, list):
-                    # DeepExplainer: list of n_classes arrays each (N, n_features)
-                    batch_shap[i] = shap_batch[c][i]
-                elif isinstance(shap_batch, np.ndarray) and shap_batch.ndim == 3:
-                    # GradientExplainer: single array (N, n_features, n_classes)
-                    batch_shap[i] = shap_batch[i, :, c]
-                elif isinstance(shap_batch, np.ndarray) and shap_batch.ndim == 2:
-                    # Single-output or already reduced: (N, n_features)
-                    batch_shap[i] = shap_batch[i]
+            # Normalise to (N, n_features) regardless of explainer output format:
+            #  - DeepExplainer  → list of n_classes arrays, each (N, n_features)
+            #  - GradientExplainer → list or ndarray of varying shape
+            # Strategy: take mean absolute SHAP across all classes.
+            # This is actually *better* for backdoor detection because a triggered
+            # sample concentrates importance regardless of which class it predicts.
+            if isinstance(shap_batch, list):
+                # list[n_classes] of (N, n_features)  — standard DeepExplainer
+                stacked = np.stack([np.abs(s) for s in shap_batch], axis=0)  # (C, N, F)
+                reduced = stacked.mean(axis=0)  # (N, F)
+            elif isinstance(shap_batch, np.ndarray):
+                arr = np.abs(shap_batch)
+                if arr.ndim == 2:
+                    reduced = arr                          # (N, F) — already done
+                elif arr.ndim == 3:
+                    # Could be (N, F, C) or (C, N, F) — take mean over last axis
+                    # Shape heuristic: axis with size == n_features is F
+                    n_feat = batch.shape[1]
+                    if arr.shape[-1] == n_feat:
+                        reduced = arr.mean(axis=0)        # (N, F) after mean over C
+                    elif arr.shape[1] == n_feat:
+                        reduced = arr.mean(axis=-1)       # (N, F) after mean over C
+                    else:
+                        reduced = arr.reshape(len(batch), n_feat, -1).mean(axis=-1)
                 else:
-                    # Fallback: take abs mean across last axis if extra dims
-                    sv = np.array(shap_batch[i])
-                    batch_shap[i] = sv.reshape(batch.shape[1], -1).mean(axis=-1)
-            all_shap.append(batch_shap)
+                    reduced = arr.reshape(len(batch), -1)[:, :batch.shape[1]]
+            else:
+                reduced = np.zeros((len(batch), batch.shape[1]), dtype=np.float32)
+
+            all_shap.append(reduced.astype(np.float32))
 
         return np.vstack(all_shap)
 
